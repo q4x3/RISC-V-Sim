@@ -17,43 +17,14 @@ using namespace std;
 
 namespace SIM {
     enum INST {
-    LUI,
-    AUIPC,
-    JAL,
-    JALR,
-    BEQ,
-    BNE,
-    BLT,
-    BGE,
-    BLTU,
-    BGEU,
-    LB,
-    LH,
-    LW,
-    LBU,
-    LHU,
-    SB,
-    SH,
-    SW,
-    ADDI,
-    SLTI,
-    SLTIU,
-    XORI,
-    ORI,
-    ANDI,
-    SLLI,
-    SRLI,
-    SRAI,
-    ADD,
-    SUB,
-    SLL,
-    SLT,
-    SLTU,
-    XOR,
-    SRL,
-    SRA,
-    OR,
-    AND
+    LUI, AUIPC,                                             // U-type
+    JALR,                                                   // I-type
+    JAL,                                                    // J-type
+    BEQ, BNE, BLT, BGE, BLTU, BGEU,                         // B-type
+    LB, LH, LW, LBU, LHU,                                   // I-type
+    SB, SH, SW,                                             // S-type
+    ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI,   // I-type
+    ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND        // R-type
     };
 
     class simulator {
