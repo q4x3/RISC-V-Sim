@@ -3,4 +3,4 @@ project(RISC-V-SIM)
 
 set(CMAKE_CXX_STANDARD 14)
 
-add_executable(RISC-V-SIM simulator.cpp)
+add_executable(code simulator.cpp)
