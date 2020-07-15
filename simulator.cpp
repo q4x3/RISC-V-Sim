@@ -766,7 +766,7 @@ namespace SIM {
 
 int main() {
     SIM::simulator sim;
-    freopen("a.in", "r", stdin);
+    // freopen("a.in", "r", stdin);
     // freopen("c.out", "w", stdout);
     sim.solve();
     return 0;
