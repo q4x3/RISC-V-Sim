@@ -24,24 +24,40 @@ namespace SIM {
     LB, LH, LW, LBU, LHU,                                   // I-type
     SB, SH, SW,                                             // S-type
     ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI,   // I-type
-    ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND        // R-type
+    ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND,       // R-type
+    NOOP
     };
-
+    const char INST_string[40][15] = {
+    "LUI  ",  "AUIPC", "JALR ",  "JAL  ", "BEQ  ",   "BNE  ",   "BLT  ", "BGE  ",
+    "BLTU ", "BGEU ",  "LB   ",   "LH   ",   "LW   ",    "LBU  ",   "LHU  ", "SB   ",
+    "SH   ",   "SW   ",    "ADDI ", "SLTI ", "SLTIU", "XORI ",  "ORI  ", "ANDI ",
+    "SLLI ", "SRLI ",  "SRAI ", "ADD  ",  "SUB  ",   "SLL  ",   "SLT  ", "SLTU ",
+    "XOR  ",  "SRL  ",   "SRA  ",  "OR   ",   "AND  ",   "NOOP "};
     class simulator {
         public:
         uint8_t mem[0xFFFFF];
         uint32_t code;
-        int reg[32], pc, ext_imm, rs1, rs2, rd, exe_tmp, pc_tmp, mem_tmp, ALU;
-        bool pc_jump;
+        int reg[32], pc, endcount;
         char buffer[10];
         INST opt;
+        bool endflag;
+        struct seg {
+            uint32_t code;
+            int curpc, ext_imm, rs1, rs2, rd, pc_tmp, ALU, regrs1, regrs2;
+            bool pc_jump;
+            INST opt;
+            seg() {
+                code = 0;
+                curpc = 0, ext_imm = 0, rs1 = 0, rs2 = 0, rd = 0, pc_tmp = 0, ALU = 0, regrs1 = 0, regrs2 = 0, pc_jump = 0;
+                opt = NOOP;
+            }
+        } IF, ID, EX, MEM, WB;
         // CONSTRUCT
         simulator() {
             code = 0;
-            pc = 0, ext_imm = 0, rs1 = 0, rs2 = 0, rd = 0, exe_tmp = 0, pc_jump = 0, pc_tmp = 0, mem_tmp = 0, ALU = 0;
-            for(int i = 0;i < 32;++ i) {
-                reg[i] = 0;
-            }
+            pc = 0;
+            endflag = 0;
+            endcount = 0;
         }
         // READ
         void read() {
@@ -86,404 +102,663 @@ namespace SIM {
         }
         // INSTRUCTION FETCH
         void fetch() {
-            memcpy(&code, mem + pc, 4);
+            if(IF.code == 0x0FF00513U) {
+                endflag = 1;
+                return;
+            }
+            memcpy(&(IF.code), mem + pc, 4);
+            IF.curpc = pc;
+            pc += 4;
         }
         // INSTRUCTION DECODE
         void decode() {
-            uint32_t opcode = code & 0x7f,
-                     funct3 = (code >> 12) & 0x7, funct7 = code >> 25;
-            rs1 = 0, rs2 = 0, rd = 0, exe_tmp = 0, pc_jump = 0, pc_tmp = 0, mem_tmp = 0, ALU = 0;
+            INST lastOpt = ID.opt;
+            uint32_t opcode = IF.code & 0x7f,
+                     funct3 = (IF.code >> 12) & 0x7, funct7 = IF.code >> 25;
+            ID.opt = NOOP, ID.rd = 0, ID.rs1 = 0, ID.rs2 = 0, ID.ext_imm = 0, ID.regrs1 = 0, ID.regrs2 = 0;
+            ID.curpc = IF.curpc;
+            ID.code = IF.code;
+            if(ID.code == 0x0FF00513U) {
+                return;
+            }
             switch(opcode) {
             case 0x37:
-                opt = LUI;
-                rd = (code >> 7) & 0x1F;
-                ext_imm = ext_U(code);
+                ID.opt = LUI;
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.ext_imm = ext_U(IF.code);
                 break;
             case 0x17:
-                opt = AUIPC;
-                rd = (code >> 7) & 0x1F;
-                ext_imm = ext_U(code);
+                ID.opt = AUIPC;
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.ext_imm = ext_U(IF.code);
                 break;
             case 0x6F:
-                opt = JAL;
-                rd = (code >> 7) & 0x1F;
-                ext_imm = ext_J(code);
+                ID.opt = JAL;
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.ext_imm = ext_J(IF.code);
+                pc = ID.curpc + ID.ext_imm;
                 break;
             case 0x67:
-                opt = JALR;
-                rd = (code >> 7) & 0x1F;
-                rs1 = (code >> 15) & 0x1F;
-                ext_imm = ext_I(code);
+                ID.opt = JALR;
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.regrs1 = reg[ID.rs1];
+                ID.ext_imm = ext_I(IF.code);
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
+                pc = ID.regrs1 + ID.ext_imm;
                 break;
             case 0x63:
                 switch(funct3) {
                 case 0x0:
-                    opt = BEQ;
+                    ID.opt = BEQ;
                     break;
                 case 0x1:
-                    opt = BNE;
+                    ID.opt = BNE;
                     break;
                 case 0x4:
-                    opt = BLT;
+                    ID.opt = BLT;
                     break;
                 case 0x5:
-                    opt = BGE;
+                    ID.opt = BGE;
                     break;
                 case 0x6:
-                    opt = BLTU;
+                    ID.opt = BLTU;
                     break;
                 case 0x7:
-                    opt = BGEU;
+                    ID.opt = BGEU;
                     break;
                 }
-                rs1 = (code >> 15) & 0x1F;
-                rs2 = (code >> 20) & 0x1F;
-                ext_imm = ext_B(code);
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.rs2 = (IF.code >> 20) & 0x1F;
+                ID.ext_imm = ext_B(IF.code);
+                ID.regrs1 = reg[ID.rs1];
+                ID.regrs2 = reg[ID.rs2];
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上两条指令检验
+                if(ID.rs2 == MEM.rd && ID.rs2 != 0 && MEM.opt != NOOP) {
+                    ID.regrs2 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
+                // 上一条指令检验
+                if(ID.rs2 == EX.rd && ID.rs2 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs2 = MEM.ALU;
+                    } else {
+                        ID.regrs2 = EX.ALU;
+                    }
+                }
                 break;
             case 0x3:
                 switch(funct3) {
                 case 0x0:
-                    opt = LB;
+                    ID.opt = LB;
                     break;
                 case 0x1:
-                    opt = LH;
+                    ID.opt = LH;
                     break;
                 case 0x2:
-                    opt = LW;
+                    ID.opt = LW;
                     break;
                 case 0x4:
-                    opt = LBU;
+                    ID.opt = LBU;
                     break;
                 case 0x5:
-                    opt = LHU;
+                    ID.opt = LHU;
                     break;
                 }
-                rd = (code >> 7) & 0x1F;
-                rs1 = (code >> 15) & 0x1F;
-                ext_imm = ext_I(code);
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.ext_imm = ext_I(IF.code);
+                ID.regrs1 = reg[ID.rs1];
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
                 break;
             case 0x23:
                 switch(funct3) {
                 case 0x0:
-                    opt = SB;
+                    ID.opt = SB;
                     break;
                 case 0x1:
-                    opt = SH;
+                    ID.opt = SH;
                     break;
                 case 0x2:
-                    opt = SW;
+                    ID.opt = SW;
                     break;
                 }
-                rs1 = (code >> 15) & 0x1F;
-                rs2 = (code >> 20) & 0x1F;
-                ext_imm = ext_S(code);
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.rs2 = (IF.code >> 20) & 0x1F;
+                ID.ext_imm = ext_S(IF.code);
+                ID.regrs1 = reg[ID.rs1];
+                ID.regrs2 = reg[ID.rs2];
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上两条指令检验
+                if(ID.rs2 == MEM.rd && ID.rs2 != 0 && MEM.opt != NOOP) {
+                    ID.regrs2 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
+                // 上一条指令检验
+                if(ID.rs2 == EX.rd && ID.rs2 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs2 = MEM.ALU;
+                    } else {
+                        ID.regrs2 = EX.ALU;
+                    }
+                }
                 break;
             case 0x13:
                 switch(funct3) {
                 case 0x0:
-                    opt = ADDI;
+                    ID.opt = ADDI;
                     break;
                 case 0x2:
-                    opt = SLTI;
+                    ID.opt = SLTI;
                     break;
                 case 0x3:
-                    opt = SLTIU;
+                    ID.opt = SLTIU;
                     break;
                 case 0x4:
-                    opt = XORI;
+                    ID.opt = XORI;
                     break;
                 case 0x6:
-                    opt = ORI;
+                    ID.opt = ORI;
                     break;
                 case 0x7:
-                    opt = ANDI;
+                    ID.opt = ANDI;
                     break;
                 case 0x1:
-                    opt = SLLI;
+                    ID.opt = SLLI;
                     break;
                 case 0x5:
                     switch(funct7) {
                     case 0x0:
-                        opt = SRLI;
-                        // to do
+                        ID.opt = SRLI;
                         break;
                     case 0x20:
-                        opt = SRAI;
-                        // to do
+                        ID.opt = SRAI;
                         break;
                     }
                     break;
                 }
-                rd = (code >> 7) & 0x1F;
-                rs1 = (code >> 15) & 0x1F;
-                ext_imm = ext_I(code);
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.ext_imm = ext_I(IF.code);
+                ID.regrs1 = reg[ID.rs1];
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
                 break;
             case 0x33:
                 switch(funct3) {
                 case 0x0:
                     switch(funct7) {
                     case 0x0:
-                        opt = ADD;
+                        ID.opt = ADD;
                         break;
                     case 0x20:
-                        opt = SUB;
+                        ID.opt = SUB;
                         break;
                     }
                     break;
                 case 0x1:
-                    opt = SLL;
+                    ID.opt = SLL;
                     break;
                 case 0x2:
-                    opt = SLT;
+                    ID.opt = SLT;
                     break;
                 case 0x3:
-                    opt = SLTU;
+                    ID.opt = SLTU;
                     break;
                 case 0x4:
-                    opt = XOR;
+                    ID.opt = XOR;
                     break;
                 case 0x5:
                     switch(funct7) {
                     case 0x0:
-                        opt = SRL;
+                        ID.opt = SRL;
                         break;
                     case 0x20:
-                        opt = SRA;
+                        ID.opt = SRA;
                         break;
                     }
                     break;
                 case 0x6:
-                    opt = OR;
+                    ID.opt = OR;
                     break;
                 case 0x7:
-                    opt = AND;
+                    ID.opt = AND;
                     break;
                 }
-                rd = (code >> 7) & 0x1F;
-                rs1 = (code >> 15) & 0x1F;
-                rs2 = (code >> 20) & 0x1F;
+                ID.rd = (IF.code >> 7) & 0x1F;
+                ID.rs1 = (IF.code >> 15) & 0x1F;
+                ID.rs2 = (IF.code >> 20) & 0x1F;
+                ID.regrs1 = reg[ID.rs1];
+                ID.regrs2 = reg[ID.rs2];
+                // 上两条指令检验
+                if(ID.rs1 == MEM.rd && ID.rs1 != 0 && MEM.opt != NOOP) {
+                    ID.regrs1 = MEM.ALU;
+                }
+                // 上两条指令检验
+                if(ID.rs2 == MEM.rd && ID.rs2 != 0 && MEM.opt != NOOP) {
+                    ID.regrs2 = MEM.ALU;
+                }
+                // 上一条指令检验
+                if(ID.rs1 == EX.rd && ID.rs1 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs1 = MEM.ALU;
+                    } else {
+                        ID.regrs1 = EX.ALU;
+                    }
+                }
+                // 上一条指令检验
+                if(ID.rs2 == EX.rd && ID.rs2 != 0 && lastOpt != NOOP) {
+                    if(EX.opt == LB || EX.opt == LH || EX.opt == LW || EX.opt == LBU || EX.opt == LHU) {
+                        wrback();
+                        memacc();
+                        // 插入空指令
+                        EX.opt = NOOP;
+                        EX.rd = 0;
+                        EX.rs1 = 0;
+                        EX.rs2 = 0;
+                        EX.pc_jump = 0;
+                        EX.curpc = 0;
+                        ID.regrs2 = MEM.ALU;
+                    } else {
+                        ID.regrs2 = EX.ALU;
+                    }
+                }
                 break;
             }
         }
         // EXECUTE
         void execute() {
-            switch(opt) {
+            EX.opt = ID.opt;
+            EX.rd = ID.rd;
+            EX.regrs1 = ID.regrs1;
+            EX.regrs2 = ID.regrs2;
+            EX.curpc = ID.curpc;
+            EX.pc_jump = 0;
+            if(ID.opt == NOOP) return;
+            EX.code = ID.code;
+            if(EX.code == 0x0FF00513U) {
+                return;
+            }
+            switch(ID.opt) {
             case LUI:
-                ALU = ext_imm;
-                pc_jump = 0;
+                EX.ALU = ID.ext_imm;
+                EX.pc_jump = 0;
                 break;
             case AUIPC:
-                ALU = pc + ext_imm;
-                pc_jump = 0;
+                EX.ALU = ID.curpc + ID.ext_imm;
+                EX.pc_jump = 0;
                 break;
             case JAL:
-                ALU = pc + 4;
-                pc_jump = 1;
-                pc_tmp = pc + ext_imm;
+                EX.ALU = ID.curpc + 4;
+                EX.pc_jump = 0;
                 break;
             case JALR:
-                ALU = pc + 4;
-                pc_jump = 1;
-                pc_tmp = reg[rs1] + ext_imm;
+                EX.ALU = ID.curpc + 4;
+                EX.pc_jump = 0;
                 break;
             case BEQ:
-                if(reg[rs1] == reg[rs2]) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(EX.regrs1 == EX.regrs2) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case BNE:
-                if(reg[rs1] != reg[rs2]) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(EX.regrs1 != EX.regrs2) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case BLT:
-                if(reg[rs1] < reg[rs2]) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(EX.regrs1 < EX.regrs2) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case BGE:
-                if(reg[rs1] >= reg[rs2]) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(EX.regrs1 >= EX.regrs2) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case BLTU:
-                if(uint32_t(reg[rs1]) < uint32_t(reg[rs2])) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(uint32_t(EX.regrs1) < uint32_t(EX.regrs2)) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case BGEU:
-                if(uint32_t(reg[rs1]) >= uint32_t(reg[rs2])) {
-                    pc_jump = 1;
-                    pc_tmp = pc + ext_imm;
+                if(uint32_t(EX.regrs1) >= uint32_t(EX.regrs2)) {
+                    EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
-                    pc_jump = 0;
+                    EX.pc_jump = 0;
                 }
                 break;
             case LB:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case LBU:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case LH:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case LHU:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case LW:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case SB:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case SH:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case SW:
-                exe_tmp = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case ADDI:
-                ALU = reg[rs1] + ext_imm;
+                EX.ALU = EX.regrs1 + ID.ext_imm;
                 break;
             case SLTI:
-                ALU = reg[rs1] < ext_imm;
+                EX.ALU = EX.regrs1 < ID.ext_imm;
                 break;
             case SLTIU:
-                ALU = uint32_t(reg[rs1]) < uint32_t(ext_imm);
+                EX.ALU = uint32_t(EX.regrs1) < uint32_t(ID.ext_imm);
                 break;
             case XORI:
-                ALU = reg[rs1] ^ ext_imm;
+                EX.ALU = EX.regrs1 ^ ID.ext_imm;
                 break;
             case ORI:
-                ALU = reg[rs1] | ext_imm;
+                EX.ALU = EX.regrs1 | ID.ext_imm;
                 break;
             case ANDI:
-                ALU = reg[rs1] & ext_imm;
+                EX.ALU = EX.regrs1 & ID.ext_imm;
                 break;
             case SLLI:
-                ALU = reg[rs1] << ext_imm;
+                EX.ALU = EX.regrs1 << ID.ext_imm;
                 break;
             case SRLI:
-                ALU = uint32_t(reg[rs1]) >> uint32_t(ext_imm);
+                EX.ALU = uint32_t(EX.regrs1) >> uint32_t(ID.ext_imm);
                 break;
             case SRAI:
-                ALU = reg[rs1] >> ext_imm;
+                EX.ALU = EX.regrs1 >> ID.ext_imm;
                 break;
             case ADD:
-                ALU = reg[rs1] + reg[rs2];
+                EX.ALU = EX.regrs1 + EX.regrs2;
                 break;
             case SUB:
-                ALU = reg[rs1] - reg[rs2];
+                EX.ALU = EX.regrs1 - EX.regrs2;
                 break;
             case SLL:
-                ALU = reg[rs1] << (reg[rs2] & 0x1F);
+                EX.ALU = EX.regrs1 << (EX.regrs2 & 0x1F);
                 break;
             case SLT:
-                ALU = reg[rs1] < reg[rs2];
+                EX.ALU = EX.regrs1 < EX.regrs2;
                 break;
             case SLTU:
-                ALU = uint32_t(reg[rs1]) < uint32_t(reg[rs2]);
+                EX.ALU = uint32_t(EX.regrs1) < uint32_t(EX.regrs2);
                 break;
             case XOR:
-                ALU = reg[rs1] ^ reg[rs2];
+                EX.ALU = EX.regrs1 ^ EX.regrs2;
                 break;
             case SRL:
-                ALU = uint32_t(reg[rs1]) >> uint32_t(reg[rs2] & 0x1F);
+                EX.ALU = uint32_t(EX.regrs1) >> uint32_t(EX.regrs2 & 0x1F);
                 break;
             case SRA:
-                ALU = reg[rs1] >> (reg[rs2] & 0x1F);
+                EX.ALU = EX.regrs1 >> (EX.regrs2 & 0x1F);
                 break;
             case OR:
-                ALU = reg[rs1] | reg[rs2];
+                EX.ALU = EX.regrs1 | EX.regrs2;
                 break;
             case AND:
-                ALU = reg[rs1] | reg[rs2];
+                EX.ALU = EX.regrs1 | EX.regrs2;
                 break;
+            }
+            if(EX.pc_jump) {
+                // 插入空指令
+                ID.opt = NOOP;
+                ID.rd = 0;
+                ID.rs1 = 0;
+                ID.rs2 = 0;
+                ID.curpc = 0;
+                // 重新取指
+                memcpy(&(IF.code), mem + pc, 4);
+                IF.curpc = pc;
+                pc += 4;
+                if(endflag == 1) {
+                    endflag = 0;
+                }
             }
         }
         // MEMORY ACCESS
         void memacc() {
-            switch(opt) {
+            MEM.rd = EX.rd;
+            MEM.opt = EX.opt;
+            // debug
+            MEM.curpc = EX.curpc;
+            if(EX.opt == NOOP) 
+                return;
+            MEM.code = EX.code;
+            if(MEM.code == 0x0FF00513U) {
+                return;
+            }
+            switch(EX.opt) {
             case LB: {
                 int8_t tmp;
-                memcpy(&tmp, mem + exe_tmp, 1);
-                ALU = tmp;
+                memcpy(&tmp, mem + EX.ALU, 1);
+                MEM.ALU = tmp;
                 break;
             }
             case LBU: {
                 uint8_t tmp;
-                memcpy(&tmp, mem + exe_tmp, 1);
-                ALU = tmp;
+                memcpy(&tmp, mem + EX.ALU, 1);
+                MEM.ALU = tmp;
                 break;
             }
             case LH: {
                 int16_t tmp;
-                memcpy(&tmp, mem + exe_tmp, 2);
-                ALU = tmp;
+                memcpy(&tmp, mem + EX.ALU, 2);
+                MEM.ALU = tmp;
                 break;
             }
             case LHU: {
                 uint16_t tmp;
-                memcpy(&tmp, mem + exe_tmp, 2);
-                ALU = tmp;
+                memcpy(&tmp, mem + EX.ALU, 2);
+                MEM.ALU = tmp;
                 break;
             }
             case LW: {
                 int32_t tmp;
-                memcpy(&tmp, mem + exe_tmp, 4);
-                ALU = tmp;
+                memcpy(&tmp, mem + EX.ALU, 4);
+                MEM.ALU = tmp;
                 break;
             }
             case SB: {
-                memcpy(mem + exe_tmp, &reg[rs2], 1);
+                memcpy(mem + EX.ALU, &EX.regrs2, 1);
                 break;
             }
             case SH: {
-                memcpy(mem + exe_tmp, &reg[rs2], 2);
+                memcpy(mem + EX.ALU, &EX.regrs2, 2);
                 break;
             }
             case SW: {
-                memcpy(mem + exe_tmp, &reg[rs2], 4);
+                memcpy(mem + EX.ALU, &EX.regrs2, 4);
                 break;
             }
+            default:
+                MEM.ALU = EX.ALU;
             }
         }
         // WRITE BACK
         void wrback() {
-            if(rd != 0) {
-                reg[rd] = ALU;
+            WB.opt = MEM.opt;
+            if(MEM.opt == NOOP) return;
+            if(MEM.rd != 0) {
+                reg[MEM.rd] = MEM.ALU;
             }
+            // debug
+            //std::cout << INST_string[WB.opt] << '\t' << MEM.curpc << '\t';
+            //for(int i = 1;i < 32;++ i)
+            //    std::cout << reg[i] << '\t';
+            //std::cout << std::endl;
+            // debug
+            // printf("\t%d\t%d\t%d\t%d\t%d\n", reg[1], reg[2], reg[10], reg[14], reg[15]);
         }
         void solve() {
             read();
+            for(int i = 0;i < 32;++ i) {
+                reg[i] = 0;
+            }
+            // debug
+            // printf("opt\tx1\tx2\tx10\tx14\tx15\n");
             while(1) {
-                fetch();
-                if(code == 0x0FF00513U) {
+                wrback();
+                if(endflag == 1 && IF.opt == NOOP && ID.opt == NOOP && MEM.opt == NOOP && WB.opt == NOOP) {
                     printf("%d\n", ((unsigned int)reg[10]) & 255u);
                     break;
                 }
-                decode();
-                execute();
                 memacc();
-                wrback();
-                if(pc_jump == 0) pc += 4;
-                else pc = pc_tmp;
+                execute();
+                if(EX.pc_jump) continue;
+                decode();
+                fetch();
             }
         }
     };
@@ -491,8 +766,8 @@ namespace SIM {
 
 int main() {
     SIM::simulator sim;
-    // freopen("a.in", "r", stdin);
+    freopen("a.in", "r", stdin);
+    // freopen("c.out", "w", stdout);
     sim.solve();
-    // printf("%d\n", sim.counter);
     return 0;
 }
