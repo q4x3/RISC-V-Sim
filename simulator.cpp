@@ -34,7 +34,7 @@ namespace SIM {
     "XOR  ",  "SRL  ",   "SRA  ",  "OR   ",   "AND  ",   "NOOP "};
     class simulator {
         public:
-        uint8_t mem[0xFFFFF], bicounter[1 << 5];
+        uint8_t mem[0xFFFFF], bicounter[1 << 8];
         uint32_t code;
         int reg[32], pc, endcount, tot_pre, correct_pre;
         char buffer[10];
@@ -103,14 +103,12 @@ namespace SIM {
         }
         // GET PREDICT
         void predict() {
-            IF.jump = bicounter[IF.curpc & 0x1f] & 2U;
+            IF.jump = bicounter[(IF.curpc >> 2) & 0xff] & 2U;
             if(IF.jump) {
                 pc += ext_B(IF.code);
             } else {
                 pc += 4;
             }
-            // pc += 4;
-            // jump = 0;
         }
         // INSTRUCTION FETCH
         void fetch() {
@@ -122,7 +120,6 @@ namespace SIM {
             memcpy(&(IF.code), mem + pc, 4);
             IF.curpc = pc;
             if((IF.code & 0x7fU) == 0x63U) {
-                ++ tot_pre;
                 predict();
             } else {
                 pc += 4;
@@ -137,9 +134,6 @@ namespace SIM {
             ID.curpc = IF.curpc;
             ID.code = IF.code;
             ID.jump = IF.jump;
-            // debug
-            if(ID.curpc == 11432)
-                int a = 1;
             if(ID.code == 0x0FF00513U) {
                 return;
             }
@@ -669,16 +663,15 @@ namespace SIM {
                 break;
             }
             if(EX.pc_jump) {
+                ++ tot_pre;
                 if(ID.jump == 0) {
                     // 更新预测器
-                    if(bicounter[ID.curpc & 0x1f] == 0) {
-                        bicounter[ID.curpc & 0x1f] = 1;
+                    if(bicounter[(EX.curpc >> 2) & 0xff] == 0) {
+                        bicounter[(EX.curpc >> 2) & 0xff] = 1;
                     } else {
-                        bicounter[ID.curpc & 0x1f] = 3;
+                        bicounter[(EX.curpc >> 2) & 0xff] = 2;
                     }
                     // 插入空指令
-                    if((IF.code & 0x7fU) == 0x63U)
-                        -- tot_pre;
                     ID.opt = NOOP;
                     ID.rd = 0;
                     ID.rs1 = 0;
@@ -693,19 +686,18 @@ namespace SIM {
                     EX.bubble = 1;
                 } else {
                     ++ correct_pre;
-                    bicounter[ID.curpc & 0x1f] = 3;
+                    bicounter[(EX.curpc >> 2) & 0xff] = 3;
                 }
             } else {
                 if(ID.jump == 1) {
+                    ++ tot_pre;
                     // 更新预测器
-                    if(bicounter[ID.curpc & 0x1f] == 2) {
-                        bicounter[ID.curpc & 0x1f] = 0;
+                    if(bicounter[(EX.curpc >> 2) & 0xff] == 2) {
+                        bicounter[(EX.curpc >> 2) & 0xff] = 1;
                     } else {
-                        bicounter[ID.curpc & 0x1f] = 2;
+                        bicounter[(EX.curpc >> 2) & 0xff] = 2;
                     }
                     // 插入空指令
-                    if((IF.code & 0x7fU) == 0x63U)
-                        -- tot_pre;
                     ID.opt = NOOP;
                     ID.rd = 0;
                     ID.rs1 = 0;
@@ -720,8 +712,9 @@ namespace SIM {
                     }
                 } else {
                     if(EX.opt == BEQ || EX.opt == BGE || EX.opt == BGEU || EX.opt == BLT || EX.opt == BLTU || EX.opt == BNE) {
-                        bicounter[ID.curpc & 0x1f] = 0;
+                        bicounter[(EX.curpc >> 2) & 0xff] = 0;
                         ++ correct_pre;
+                        ++ tot_pre;
                     }
                 }
             }
@@ -730,10 +723,8 @@ namespace SIM {
         void memacc() {
             MEM.rd = EX.rd;
             MEM.opt = EX.opt;
-            // debug
             MEM.curpc = EX.curpc;
-            if(EX.opt == NOOP) 
-                return;
+            if(EX.opt == NOOP) return;
             MEM.code = EX.code;
             if(MEM.code == 0x0FF00513U) {
                 return;
@@ -792,21 +783,13 @@ namespace SIM {
             if(MEM.rd != 0) {
                 reg[MEM.rd] = MEM.ALU;
             }
-            // debug
-            // std::cout << INST_string[WB.opt] << '\t' << MEM.curpc % 32 << '\n';
-            //for(int i = 1;i < 32;++ i)
-            //    std::cout << reg[i] << '\t';
-            //std::cout << std::endl;
-            // debug
-            // printf("\t%d\t%d\t%d\t%d\t%d\n", reg[1], reg[2], reg[10], reg[14], reg[15]);
         }
         void solve() {
             read();
             for(int i = 0;i < 32;++ i) {
                 reg[i] = 0;
+                bicounter[i] = 0;
             }
-            // debug
-            // printf("opt\tx1\tx2\tx10\tx14\tx15\n");
             while(1) {
                 wrback();
                 if(endflag == 1 && IF.opt == NOOP && ID.opt == NOOP && MEM.opt == NOOP && WB.opt == NOOP) {
@@ -828,9 +811,7 @@ namespace SIM {
 
 int main() {
     SIM::simulator sim;
-    // freopen("a.in", "r", stdin);
-    // freopen("a.out", "w", stdout);
     sim.solve();
-    // sim.showpre();
+    sim.showpre();
     return 0;
 }
