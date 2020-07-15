@@ -14,6 +14,7 @@
 #define b_30_21 0x7FE00000U
 
 using namespace std;
+
 namespace SIM {
     enum INST {
     LUI, AUIPC,                                             // U-type
@@ -34,20 +35,20 @@ namespace SIM {
     "XOR  ",  "SRL  ",   "SRA  ",  "OR   ",   "AND  ",   "NOOP "};
     class simulator {
         public:
-        uint8_t mem[0xFFFFF], bicounter[1 << 5];
+        uint8_t mem[0xFFFFF];
         uint32_t code;
-        int reg[32], pc, endcount, tot_pre, correct_pre;
+        int reg[32], pc, endcount;
         char buffer[10];
         INST opt;
-        bool endflag, jump;
+        bool endflag;
         struct seg {
             uint32_t code;
             int curpc, ext_imm, rs1, rs2, rd, pc_tmp, ALU, regrs1, regrs2;
-            bool pc_jump, jump, bubble;
+            bool pc_jump;
             INST opt;
             seg() {
                 code = 0;
-                curpc = 0, ext_imm = 0, rs1 = 0, rs2 = 0, rd = 0, pc_tmp = 0, ALU = 0, regrs1 = 0, regrs2 = 0, pc_jump = 0, jump = 0;
+                curpc = 0, ext_imm = 0, rs1 = 0, rs2 = 0, rd = 0, pc_tmp = 0, ALU = 0, regrs1 = 0, regrs2 = 0, pc_jump = 0;
                 opt = NOOP;
             }
         } IF, ID, EX, MEM, WB;
@@ -57,8 +58,6 @@ namespace SIM {
             pc = 0;
             endflag = 0;
             endcount = 0;
-            tot_pre = 0;
-            correct_pre = 0;
         }
         // READ
         void read() {
@@ -101,32 +100,15 @@ namespace SIM {
             tmp |= (code & b_19_12);
             return (code >> 31) ? (tmp | b_31_20) : tmp;
         }
-        // GET PREDICT
-        void predict() {
-            IF.jump = bicounter[IF.curpc & 0x1f] & 2U;
-            if(IF.jump) {
-                pc += ext_B(IF.code);
-            } else {
-                pc += 4;
-            }
-            // pc += 4;
-            // jump = 0;
-        }
         // INSTRUCTION FETCH
         void fetch() {
-            IF.jump = 0;
-            if(IF.code == 0x0FF00513U && EX.bubble != 1) {
+            if(IF.code == 0x0FF00513U) {
                 endflag = 1;
                 return;
             }
             memcpy(&(IF.code), mem + pc, 4);
             IF.curpc = pc;
-            if((IF.code & 0x7fU) == 0x63U) {
-                ++ tot_pre;
-                predict();
-            } else {
-                pc += 4;
-            }
+            pc += 4;
         }
         // INSTRUCTION DECODE
         void decode() {
@@ -136,10 +118,6 @@ namespace SIM {
             ID.opt = NOOP, ID.rd = 0, ID.rs1 = 0, ID.rs2 = 0, ID.ext_imm = 0, ID.regrs1 = 0, ID.regrs2 = 0;
             ID.curpc = IF.curpc;
             ID.code = IF.code;
-            ID.jump = IF.jump;
-            // debug
-            if(ID.curpc == 11432)
-                int a = 1;
             if(ID.code == 0x0FF00513U) {
                 return;
             }
@@ -521,7 +499,6 @@ namespace SIM {
             EX.regrs2 = ID.regrs2;
             EX.curpc = ID.curpc;
             EX.pc_jump = 0;
-            EX.bubble = 0;
             if(ID.opt == NOOP) return;
             EX.code = ID.code;
             if(EX.code == 0x0FF00513U) {
@@ -547,6 +524,7 @@ namespace SIM {
             case BEQ:
                 if(EX.regrs1 == EX.regrs2) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -554,6 +532,7 @@ namespace SIM {
             case BNE:
                 if(EX.regrs1 != EX.regrs2) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -561,6 +540,7 @@ namespace SIM {
             case BLT:
                 if(EX.regrs1 < EX.regrs2) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -568,6 +548,7 @@ namespace SIM {
             case BGE:
                 if(EX.regrs1 >= EX.regrs2) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -575,6 +556,7 @@ namespace SIM {
             case BLTU:
                 if(uint32_t(EX.regrs1) < uint32_t(EX.regrs2)) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -582,6 +564,7 @@ namespace SIM {
             case BGEU:
                 if(uint32_t(EX.regrs1) >= uint32_t(EX.regrs2)) {
                     EX.pc_jump = 1;
+                    pc = ID.curpc + ID.ext_imm;
                 } else {
                     EX.pc_jump = 0;
                 }
@@ -669,60 +652,18 @@ namespace SIM {
                 break;
             }
             if(EX.pc_jump) {
-                if(ID.jump == 0) {
-                    // 更新预测器
-                    if(bicounter[ID.curpc & 0x1f] == 0) {
-                        bicounter[ID.curpc & 0x1f] = 1;
-                    } else {
-                        bicounter[ID.curpc & 0x1f] = 3;
-                    }
-                    // 插入空指令
-                    if((IF.code & 0x7fU) == 0x63U)
-                        -- tot_pre;
-                    ID.opt = NOOP;
-                    ID.rd = 0;
-                    ID.rs1 = 0;
-                    ID.rs2 = 0;
-                    ID.curpc = 0;
-                    // 重新取指
-                    pc = IF.curpc - 4 + ID.ext_imm;
-                    fetch();
-                    if(endflag == 1) {
-                        endflag = 0;
-                    }
-                    EX.bubble = 1;
-                } else {
-                    ++ correct_pre;
-                    bicounter[ID.curpc & 0x1f] = 3;
-                }
-            } else {
-                if(ID.jump == 1) {
-                    // 更新预测器
-                    if(bicounter[ID.curpc & 0x1f] == 2) {
-                        bicounter[ID.curpc & 0x1f] = 0;
-                    } else {
-                        bicounter[ID.curpc & 0x1f] = 2;
-                    }
-                    // 插入空指令
-                    if((IF.code & 0x7fU) == 0x63U)
-                        -- tot_pre;
-                    ID.opt = NOOP;
-                    ID.rd = 0;
-                    ID.rs1 = 0;
-                    ID.rs2 = 0;
-                    ID.curpc = 0;
-                    EX.bubble = 1;
-                    // 重新取指
-                    pc = IF.curpc - ID.ext_imm + 4;
-                    fetch();
-                    if(endflag == 1) {
-                        endflag = 0;
-                    }
-                } else {
-                    if(EX.opt == BEQ || EX.opt == BGE || EX.opt == BGEU || EX.opt == BLT || EX.opt == BLTU || EX.opt == BNE) {
-                        bicounter[ID.curpc & 0x1f] = 0;
-                        ++ correct_pre;
-                    }
+                // 插入空指令
+                ID.opt = NOOP;
+                ID.rd = 0;
+                ID.rs1 = 0;
+                ID.rs2 = 0;
+                ID.curpc = 0;
+                // 重新取指
+                memcpy(&(IF.code), mem + pc, 4);
+                IF.curpc = pc;
+                pc += 4;
+                if(endflag == 1) {
+                    endflag = 0;
                 }
             }
         }
@@ -793,7 +734,7 @@ namespace SIM {
                 reg[MEM.rd] = MEM.ALU;
             }
             // debug
-            // std::cout << INST_string[WB.opt] << '\t' << MEM.curpc % 32 << '\n';
+            std::cout << INST_string[WB.opt] << '\t' << MEM.curpc << '\n';
             //for(int i = 1;i < 32;++ i)
             //    std::cout << reg[i] << '\t';
             //std::cout << std::endl;
@@ -815,22 +756,18 @@ namespace SIM {
                 }
                 memacc();
                 execute();
-                if(EX.bubble) continue;
+                if(EX.pc_jump) continue;
                 decode();
                 fetch();
             }
-        }
-        void showpre() {
-            printf("tot: %d\tcorrect: %d\tcorrect rate: %.3f\n", tot_pre, correct_pre, (double)correct_pre / tot_pre);
         }
     };
 };
 
 int main() {
     SIM::simulator sim;
-    // freopen("a.in", "r", stdin);
-    // freopen("a.out", "w", stdout);
+    freopen("a.in", "r", stdin);
+    freopen("c.out", "w", stdout);
     sim.solve();
-    // sim.showpre();
     return 0;
 }
