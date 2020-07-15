@@ -812,6 +812,6 @@ namespace SIM {
 int main() {
     SIM::simulator sim;
     sim.solve();
-    sim.showpre();
+    // sim.showpre();
     return 0;
 }
