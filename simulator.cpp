@@ -34,7 +34,7 @@ namespace SIM {
     "XOR  ",  "SRL  ",   "SRA  ",  "OR   ",   "AND  ",   "NOOP "};
     class simulator {
         public:
-        uint8_t mem[0xFFFFF], bicounter[1 << 8];
+        uint8_t mem[0xFFFFF], bicounter[1 << 5][1 << 4], history[1 << 5];
         uint32_t code;
         int reg[32], pc, endcount, tot_pre, correct_pre;
         char buffer[10];
@@ -103,7 +103,7 @@ namespace SIM {
         }
         // GET PREDICT
         void predict() {
-            IF.jump = bicounter[(IF.curpc >> 2) & 0xff] & 2U;
+            IF.jump = bicounter[(IF.curpc >> 2) & 0x1f][history[(IF.curpc >> 2) & 0x1f]] & 2U;
             if(IF.jump) {
                 pc += ext_B(IF.code);
             } else {
@@ -662,14 +662,15 @@ namespace SIM {
                 EX.ALU = EX.regrs1 | EX.regrs2;
                 break;
             }
+            int pclow = (EX.curpc >> 2) & 0x1f;
             if(EX.pc_jump) {
                 ++ tot_pre;
                 if(ID.jump == 0) {
                     // 更新预测器
-                    if(bicounter[(EX.curpc >> 2) & 0xff] == 0) {
-                        bicounter[(EX.curpc >> 2) & 0xff] = 1;
+                    if(bicounter[pclow][history[pclow]] == 0) {
+                        bicounter[pclow][history[pclow]] = 1;
                     } else {
-                        bicounter[(EX.curpc >> 2) & 0xff] = 2;
+                        bicounter[pclow][history[pclow]] = 2;
                     }
                     // 插入空指令
                     ID.opt = NOOP;
@@ -686,17 +687,19 @@ namespace SIM {
                     EX.bubble = 1;
                 } else {
                     ++ correct_pre;
-                    bicounter[(EX.curpc >> 2) & 0xff] = 3;
+                    bicounter[pclow][history[pclow]] = 3;
                 }
+                history[pclow] = (((history[pclow] << 1) & 0xf) | 1U);
             } else {
                 if(ID.jump == 1) {
                     ++ tot_pre;
                     // 更新预测器
-                    if(bicounter[(EX.curpc >> 2) & 0xff] == 2) {
-                        bicounter[(EX.curpc >> 2) & 0xff] = 1;
+                    if(bicounter[pclow][history[pclow]] == 2) {
+                        bicounter[pclow][history[pclow]] = 1;
                     } else {
-                        bicounter[(EX.curpc >> 2) & 0xff] = 2;
+                        bicounter[pclow][history[pclow]] = 2;
                     }
+                    history[pclow] = ((history[pclow] << 1) & 0xf);
                     // 插入空指令
                     ID.opt = NOOP;
                     ID.rd = 0;
@@ -712,7 +715,8 @@ namespace SIM {
                     }
                 } else {
                     if(EX.opt == BEQ || EX.opt == BGE || EX.opt == BGEU || EX.opt == BLT || EX.opt == BLTU || EX.opt == BNE) {
-                        bicounter[(EX.curpc >> 2) & 0xff] = 0;
+                        bicounter[pclow][history[pclow]] = 0;
+                        history[pclow] = ((history[pclow] << 1) & 0xf);
                         ++ correct_pre;
                         ++ tot_pre;
                     }
@@ -788,7 +792,9 @@ namespace SIM {
             read();
             for(int i = 0;i < 32;++ i) {
                 reg[i] = 0;
-                bicounter[i] = 0;
+                history[i] = 0;
+                for(int j = 1;j < 16;++ j)
+                    bicounter[i][j] = 0;
             }
             while(1) {
                 wrback();
